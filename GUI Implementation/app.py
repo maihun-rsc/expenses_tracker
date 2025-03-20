@@ -1,11 +1,10 @@
 # app.py
 # Expense Tracker Web App with Streamlit (Configurable Currency)
 # Created by Rananjay Singh Chauhan on 19/03/25, adapted for Streamlit on 20/03/25
-
 import streamlit as st
 import pandas as pd
 import matplotlib
-matplotlib.use('Agg')  # Non-interactive backend
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime
@@ -23,11 +22,57 @@ class Expenses:
         self.sender = []
         self.amount_received = []
         self.dateofreceiving = []
-        self.total_expenses = 0
-        self.total_received = 0
-        self.account_balance = 0
-        self.amount_left = 0
-        self.amount_needed = 0
+        self.prior_balance = 0.0
+        self.total_expenses = 0.0
+        self.total_received = 0.0
+        self.account_balance = 0.0
+        self.amount_left = 0.0
+        self.amount_needed = 0.0
+
+    def set_prior_balance(self, prior_balance):
+        try:
+            prior_balance = float(prior_balance)
+            if prior_balance < 0:
+                raise ValueError("Prior balance cannot be negative.")
+            self.prior_balance = prior_balance
+            return f"Prior bank balance set to {prior_balance:.2f}"
+        except ValueError as e:
+            return f"Error: {e}"
+
+    def load_from_csv(self, expenses_file=None, received_file=None, prior_balance_file=None):
+        messages = []
+        try:
+            if expenses_file is not None:
+                expenses_df = pd.read_csv(expenses_file)
+                required_columns = ['Category', 'Amount', 'Date', 'Place of Spending', 'Auto-Pay']
+                if not all(col in expenses_df.columns for col in required_columns):
+                    raise ValueError("Expenses CSV must contain columns: Category, Amount, Date, Place of Spending, Auto-Pay")
+                for _, row in expenses_df.iterrows():
+                    self.category.append(str(row['Category']))
+                    self.amountspent.append(float(row['Amount']))
+                    self.datespent.append(str(row['Date']))
+                    self.placeofspending.append(str(row['Place of Spending']))
+                    self.autopay.append(bool(row['Auto-Pay']))
+                messages.append(f"Loaded {len(expenses_df)} expense entries from CSV.")
+            if received_file is not None:
+                received_df = pd.read_csv(received_file)
+                required_columns = ['Sender', 'Amount', 'Date']
+                if not all(col in received_df.columns for col in required_columns):
+                    raise ValueError("Received CSV must contain columns: Sender, Amount, Date")
+                for _, row in received_df.iterrows():
+                    self.sender.append(str(row['Sender']))
+                    self.amount_received.append(float(row['Amount']))
+                    self.dateofreceiving.append(str(row['Date']))
+                messages.append(f"Loaded {len(received_df)} received entries from CSV.")
+            if prior_balance_file is not None:
+                prior_balance_data = prior_balance_file.read().decode('utf-8')
+                self.prior_balance = float(prior_balance_data)
+                messages.append(f"Loaded prior balance: {self.prior_balance:.2f}")
+            if not messages:
+                messages.append("No files were uploaded to load.")
+            return messages
+        except Exception as e:
+            return [f"Error loading CSV: {e}"]
 
     def filter_data(self, table, date_start=None, date_end=None, key=None, value=None):
         try:
@@ -39,7 +84,7 @@ class Expenses:
                     'place': self.placeofspending,
                     'autopay': self.autopay
                 })
-            else:  # "received"
+            else:
                 df = pd.DataFrame({
                     'sender': self.sender,
                     'amount': self.amount_received,
@@ -125,7 +170,8 @@ class Expenses:
             else:
                 self.total_received = sum(self.amount_received)
             month_str = f" for {month}" if month else ""
-            return f"Total Received{month_str}: {currency_symbol}{self.total_received:.2f}"
+            total_with_prior = self.total_received + self.prior_balance
+            return f"Total Received{month_str} (including prior balance {currency_symbol}{self.prior_balance:.2f}): {currency_symbol}{total_with_prior:.2f}"
         except ValueError:
             return f"Invalid month format: {month}. Use YYYY-MM."
         except Exception as e:
@@ -134,7 +180,7 @@ class Expenses:
     def calculate_balance(self, month=None, currency_symbol="₹"):
         exp_result = self.show_total_expenses(month, currency_symbol)
         rec_result = self.show_total_received(month, currency_symbol)
-        self.account_balance = self.total_received - self.total_expenses
+        self.account_balance = (self.total_received + self.prior_balance) - self.total_expenses
         self.amount_left = max(0, self.account_balance)
         self.amount_needed = max(0, -self.account_balance)
         return {
@@ -147,7 +193,6 @@ class Expenses:
 
     def save_to_csv_by_month(self):
         try:
-            # Expenses
             expenses_df = pd.DataFrame({
                 "Category": self.category,
                 "Amount": self.amountspent,
@@ -156,14 +201,14 @@ class Expenses:
                 "Auto-Pay": self.autopay
             })
             messages = []
+            saved_files = []
             if not expenses_df.empty:
                 expenses_df['Month'] = expenses_df['Date'].dt.strftime('%Y_%m')
                 for month, group in expenses_df.groupby('Month'):
                     filename = f"expenses_{month}.csv"
                     group[['Category', 'Amount', 'Date', 'Place of Spending', 'Auto-Pay']].to_csv(filename, index=False)
                     messages.append(f"Saved expenses for {month} to '{filename}'")
-
-            # Received
+                    saved_files.append(filename)
             received_df = pd.DataFrame({
                 "Sender": self.sender,
                 "Amount": self.amount_received,
@@ -175,24 +220,35 @@ class Expenses:
                     filename = f"received_{month}.csv"
                     group[['Sender', 'Amount', 'Date']].to_csv(filename, index=False)
                     messages.append(f"Saved received amounts for {month} to '{filename}'")
-
+                    saved_files.append(filename)
+            with open("prior_balance.txt", "w") as f:
+                f.write(str(self.prior_balance))
+            messages.append("Saved prior balance to 'prior_balance.txt'")
+            saved_files.append("prior_balance.txt")
             if not messages:
                 messages.append("No data to save.")
             messages.append("Data saved to monthly CSV files successfully.")
-            return messages
+            return messages, saved_files
         except Exception as e:
-            return [f"Error saving to CSV: {e}"]
+            return [f"Error saving to CSV: {e}"], []
 
-# Global instance (in-memory, resets on rerun)
 if 'tracker' not in st.session_state:
     st.session_state.tracker = Expenses()
 
 tracker = st.session_state.tracker
 
-# Sidebar navigation with currency selector
 st.sidebar.title("Expense Tracker")
 currency = st.sidebar.selectbox("Currency", ["₹ (INR)", "$ (USD)", "€ (EUR)"], index=0)
-currency_symbol = currency.split()[0]  # Extracts ₹, $, or €
+currency_symbol = currency.split()[0]
+
+st.sidebar.header("Set Prior Bank Balance")
+prior_balance_input = st.sidebar.number_input("Prior Bank Balance", min_value=0.0, step=0.01, value=float(tracker.prior_balance))
+if st.sidebar.button("Update Prior Balance"):
+    message = tracker.set_prior_balance(prior_balance_input)
+    if "Error" in message:
+        st.sidebar.error(message)
+    else:
+        st.sidebar.success(message)
 
 page = st.sidebar.selectbox("Choose an option", [
     "Home",
@@ -201,13 +257,14 @@ page = st.sidebar.selectbox("Choose an option", [
     "View Expenses",
     "View Received",
     "Totals & Balance",
-    "Save to Monthly CSVs"
+    "Save to Monthly CSVs",
+    "Load from CSVs"
 ])
 
-# Main app logic
 if page == "Home":
     st.title("Welcome to Your Personal Expense Tracker")
     st.write("Use the sidebar to manage your finances.")
+    st.write(f"Current Prior Bank Balance: {currency_symbol}{tracker.prior_balance:.2f}")
 
 elif page == "Enter Expenses":
     st.header("Enter Expenses")
@@ -321,7 +378,7 @@ elif page == "Totals & Balance":
                 fig, ax = plt.subplots(figsize=(6, 6))
                 balance_data = pd.DataFrame({
                     'Type': ['Expenses', 'Received'],
-                    'Amount': [tracker.total_expenses, tracker.total_received]
+                    'Amount': [tracker.total_expenses, tracker.total_received + tracker.prior_balance]
                 })
                 sns.barplot(x='Type', y='Amount', data=balance_data, palette='Set2', ax=ax)
                 month_str = f" for {month}" if month else ""
@@ -332,12 +389,31 @@ elif page == "Totals & Balance":
 elif page == "Save to Monthly CSVs":
     st.header("Save to Monthly CSVs")
     if st.button("Save"):
-        messages = tracker.save_to_csv_by_month()
+        messages, saved_files = tracker.save_to_csv_by_month()
         for message in messages:
             if "Error" in message:
                 st.error(message)
             else:
                 st.success(message)
+        for filename in saved_files:
+            with open(filename, "rb") as f:
+                st.download_button(f"Download {filename}", f, file_name=filename)
+
+elif page == "Load from CSVs":
+    st.header("Load Data from CSVs")
+    st.write("Upload your previously saved expenses, received CSVs, and prior balance file to load the data into the app.")
+    with st.form(key='load_csv_form'):
+        expenses_file = st.file_uploader("Upload Expenses CSV (e.g., expenses_YYYY_MM.csv)", type="csv")
+        received_file = st.file_uploader("Upload Received CSV (e.g., received_YYYY_MM.csv)", type="csv")
+        prior_balance_file = st.file_uploader("Upload Prior Balance File (prior_balance.txt)", type="txt")
+        submit = st.form_submit_button("Load Data")
+        if submit:
+            messages = tracker.load_from_csv(expenses_file, received_file, prior_balance_file)
+            for message in messages:
+                if "Error" in message:
+                    st.error(message)
+                else:
+                    st.success(message)
 
 if __name__ == "__main__":
     st.write("Made by Rananjay Singh 'RJ' Chauhan")
